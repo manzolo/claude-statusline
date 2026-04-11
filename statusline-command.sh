@@ -4,19 +4,33 @@ cwd=$(echo "$input" | jq -r '.cwd')
 model=$(echo "$input" | jq -r '.model.display_name')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 
-# Calculate used percentage including output tokens (used_percentage excludes output_tokens)
+# Use max of API's used_percentage and token-based calculation.
+# api_pct reflects Claude Code's internal compaction threshold (excludes output tokens).
+# Token calculation adds output tokens to predict next-turn context fill.
+# Taking the max ensures we never under-report.
 used=""
-if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
-    input_t=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-    cache_c=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-    cache_r=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
-    output_t=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
-    total=$((input_t + cache_c + cache_r + output_t))
-    if [ "$total" -gt 0 ]; then
-        used=$((total * 100 / ctx_size))
+api_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+input_t=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
+cache_c=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
+cache_r=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
+output_t=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
+total=$((input_t + cache_c + cache_r + output_t))
+
+calc_pct=""
+if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ "$total" -gt 0 ]; then
+    calc_pct=$((total * 100 / ctx_size))
+fi
+
+if [ -n "$api_pct" ] && [ -n "$calc_pct" ]; then
+    if [ "$api_pct" -gt "$calc_pct" ]; then
+        used=$api_pct
     else
-        used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+        used=$calc_pct
     fi
+elif [ -n "$api_pct" ]; then
+    used=$api_pct
+elif [ -n "$calc_pct" ]; then
+    used=$calc_pct
 fi
 
 # Directory: folder name only
@@ -49,15 +63,11 @@ if [ -n "$used" ]; then
     else
         color="\033[32m"
     fi
-    # Token counts in K format
+    # Token counts in K format (derived from pct to stay consistent with displayed percentage)
     token_info=""
     if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
         total_k=$(( (ctx_size + 500) / 1000 ))
-        if [ "${total:-0}" -gt 0 ]; then
-            used_k=$(( (total + 500) / 1000 ))
-        else
-            used_k=$(( (ctx_size * pct / 100 + 500) / 1000 ))
-        fi
+        used_k=$(( (ctx_size * pct / 100 + 500) / 1000 ))
         token_info=" ${used_k}K/${total_k}K"
     fi
     ctx=" \033[90m│\033[0m 🧠 ${color}${bar} ${pct}%${token_info}\033[0m"
