@@ -5,14 +5,14 @@ A custom statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-
 ## Preview
 
 ```
-🤖 Opus 4.6 │ 🧠 ▰▰▱▱▱ 42% 84K/200K │ 📁 my-project │ 🌿 main *3 ↑2 ↓1 │ 🐳 containers:3
+🤖 Opus 4.7 │ 🧠 ▰▰▱▱▱ 42% 84K/200K │ 📁 my-project │ 🌿 main *3 ↑2 ↓1 │ 🐳 containers:3
 ```
 
 ## Features
 
 | Section | Description |
 |---------|-------------|
-| 🤖 Model | Active model name (e.g. Opus 4.6, Sonnet 4.6) |
+| 🤖 Model | Active model name (e.g. Opus 4.7, Sonnet 4.6) |
 | 🧠 Context | Visual bar + percentage + used/total tokens |
 | 📁 Directory | Current project folder name |
 | 🌿 Git branch | Branch name, dirty file count (`*N`), ahead/behind upstream (`↑N ↓N`) |
@@ -29,6 +29,33 @@ Context bar colors:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/manzolo/claude-statusline/main/install.sh | sh
+```
+
+If you'd rather not pipe a remote script to your shell, this self-contained
+one-liner does the same work inline (download + register in `settings.json`):
+
+```bash
+mkdir -p ~/.claude && \
+  curl -fsSL https://raw.githubusercontent.com/manzolo/claude-statusline/main/statusline-command.sh \
+       -o ~/.claude/statusline-command.sh && \
+  chmod +x ~/.claude/statusline-command.sh && \
+  tmp=$(mktemp) && \
+  jq --arg cmd "bash $HOME/.claude/statusline-command.sh" \
+     '. + {statusLine:{type:"command",command:$cmd}}' \
+     ~/.claude/settings.json 2>/dev/null > "$tmp" || \
+  jq -n --arg cmd "bash $HOME/.claude/statusline-command.sh" \
+     '{statusLine:{type:"command",command:$cmd}}' > "$tmp"; \
+  mv "$tmp" ~/.claude/settings.json
+```
+
+## Update
+
+Pull the latest `statusline-command.sh` over the installed one (leaves
+`settings.json` untouched):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/manzolo/claude-statusline/main/statusline-command.sh \
+  -o ~/.claude/statusline-command.sh && chmod +x ~/.claude/statusline-command.sh
 ```
 
 ## Manual Install
@@ -61,13 +88,15 @@ curl -fsSL https://raw.githubusercontent.com/manzolo/claude-statusline/main/stat
 
 ## Uninstall
 
-Remove the script and the `statusLine` key from settings:
+Remove the script and strip the `statusLine` key from `settings.json` in one
+shot:
 
 ```bash
-rm ~/.claude/statusline-command.sh
+rm -f ~/.claude/statusline-command.sh && \
+  tmp=$(mktemp) && \
+  jq 'del(.statusLine)' ~/.claude/settings.json > "$tmp" && \
+  mv "$tmp" ~/.claude/settings.json
 ```
-
-Then remove the `"statusLine"` block from `~/.claude/settings.json`.
 
 ## License
 
