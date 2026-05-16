@@ -5,7 +5,7 @@ A custom statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-
 ## Preview
 
 ```
-🤖 Opus 4.6 │ 🧠 ▰▰▱▱▱ 42% 84K/200K │ 📁 my-project │ 🌿 main │ 🐳 containers:3
+🤖 Opus 4.6 │ 🧠 ▰▰▱▱▱ 42% 84K/200K │ 📁 my-project │ 🌿 main *3 ↑2 ↓1 │ 🐳 containers:3
 ```
 
 ## Features
@@ -15,8 +15,10 @@ A custom statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-
 | 🤖 Model | Active model name (e.g. Opus 4.6, Sonnet 4.6) |
 | 🧠 Context | Visual bar + percentage + used/total tokens |
 | 📁 Directory | Current project folder name |
-| 🌿 Git branch | Branch name + dirty file count |
+| 🌿 Git branch | Branch name, dirty file count (`*N`), ahead/behind upstream (`↑N ↓N`) |
 | 🐳 Docker | Running container count (hidden if 0) |
+
+Git and Docker checks are cached for ~3s in `/tmp/claude-statusline-<uid>/` to keep renders fast on large repos.
 
 Context bar colors:
 - **Green** < 50%

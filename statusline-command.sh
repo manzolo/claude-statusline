@@ -1,98 +1,156 @@
 #!/bin/sh
+# Claude Code statusline — single jq call + cached git/docker checks
+
+# --- color constants (pre-expanded; safe with printf '%s') ---
+ESC=$(printf '\033')
+C_RESET="${ESC}[0m"
+C_DIM="${ESC}[90m"
+C_RED="${ESC}[31m"
+C_GREEN="${ESC}[32m"
+C_YELLOW="${ESC}[33m"
+C_BLUE="${ESC}[34m"
+C_MAGENTA="${ESC}[35m"
+C_CYAN="${ESC}[36m"
+SEP=" ${C_DIM}│${C_RESET} "
+TAB=$(printf '\t')
+
 input=$(cat)
-cwd=$(echo "$input" | jq -r '.cwd')
-model=$(echo "$input" | jq -r '.model.display_name')
-ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 
-# Use max of API's used_percentage and token-based calculation.
-# api_pct reflects Claude Code's internal compaction threshold (excludes output tokens).
-# Token calculation adds output tokens to predict next-turn context fill.
-# Taking the max ensures we never under-report.
-used=""
-api_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-input_t=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-cache_c=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-cache_r=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
-output_t=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
-total=$((input_t + cache_c + cache_r + output_t))
-
-calc_pct=""
-if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null && [ "$total" -gt 0 ]; then
-    calc_pct=$((total * 100 / ctx_size))
+if ! command -v jq >/dev/null 2>&1; then
+    printf '%s🤖 (install jq)%s' "$C_RED" "$C_RESET"
+    exit 0
 fi
 
-if [ -n "$api_pct" ] && [ -n "$calc_pct" ]; then
-    if [ "$api_pct" -gt "$calc_pct" ]; then
-        used=$api_pct
-    else
-        used=$calc_pct
-    fi
-elif [ -n "$api_pct" ]; then
+# --- single jq invocation, one field per line ---
+fields=$(printf '%s' "$input" | jq -r '
+    .cwd // "",
+    (.model.display_name // ""),
+    (.context_window.context_window_size // 0 | floor),
+    (.context_window.used_percentage // 0 | floor),
+    (.context_window.current_usage.input_tokens // 0 | floor),
+    (.context_window.current_usage.cache_creation_input_tokens // 0 | floor),
+    (.context_window.current_usage.cache_read_input_tokens // 0 | floor),
+    (.context_window.current_usage.output_tokens // 0 | floor)
+' 2>/dev/null)
+
+{
+    IFS= read -r cwd
+    IFS= read -r model
+    IFS= read -r ctx_size
+    IFS= read -r api_pct
+    IFS= read -r input_t
+    IFS= read -r cache_c
+    IFS= read -r cache_r
+    IFS= read -r output_t
+} <<EOF
+$fields
+EOF
+
+: "${ctx_size:=0}" "${api_pct:=0}"
+: "${input_t:=0}" "${cache_c:=0}" "${cache_r:=0}" "${output_t:=0}"
+
+# --- context % (max of API value and token-based estimate) ---
+total=$((input_t + cache_c + cache_r + output_t))
+calc_pct=0
+if [ "$ctx_size" -gt 0 ] && [ "$total" -gt 0 ]; then
+    calc_pct=$((total * 100 / ctx_size))
+fi
+if [ "$api_pct" -gt "$calc_pct" ]; then
     used=$api_pct
-elif [ -n "$calc_pct" ]; then
+else
     used=$calc_pct
 fi
 
-# Directory: folder name only
-dir=$(basename "$cwd")
+# --- cache helpers (TTL = 3s) ---
+CACHE_TTL=3
+cache_dir="/tmp/claude-statusline-$(id -u 2>/dev/null || echo 0)"
+mkdir -p "$cache_dir" 2>/dev/null || cache_dir=""
 
-# Model: shorten "Claude Opus 4.6" -> "Opus 4.6"
-short_model=$(echo "$model" | sed 's/^Claude //')
+file_age() {
+    { [ -n "$cache_dir" ] && [ -f "$1" ]; } || { echo 99999; return; }
+    now=$(date +%s)
+    mtime=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
+    echo $((now - mtime))
+}
 
-# Git branch
-branch=""
-if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null || git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
+cwd_hash=$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)
+git_cache="$cache_dir/git-$cwd_hash"
+docker_cache="$cache_dir/docker"
+
+# --- git info (cached) ---
+branch=""; dirty_count=0; ahead=0; behind=0
+if [ -n "$cwd" ]; then
+    if [ "$(file_age "$git_cache")" -lt "$CACHE_TTL" ]; then
+        {
+            IFS= read -r branch
+            IFS= read -r dirty_count
+            IFS= read -r ahead
+            IFS= read -r behind
+        } < "$git_cache"
+    elif git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null \
+                 || git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
+        dirty_count=$(git -C "$cwd" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        ab=$(git -C "$cwd" rev-list --left-right --count @{u}...HEAD 2>/dev/null)
+        if [ -n "$ab" ]; then
+            behind=${ab%%${TAB}*}
+            ahead=${ab##*${TAB}}
+        fi
+        [ -n "$cache_dir" ] && printf '%s\n%s\n%s\n%s\n' \
+            "$branch" "$dirty_count" "$ahead" "$behind" > "$git_cache" 2>/dev/null
+    fi
 fi
+: "${dirty_count:=0}" "${ahead:=0}" "${behind:=0}"
 
-# Context bar
+# --- docker info (cached) ---
+docker_running=0
+if [ "$(file_age "$docker_cache")" -lt "$CACHE_TTL" ]; then
+    docker_running=$(cat "$docker_cache" 2>/dev/null)
+elif command -v docker >/dev/null 2>&1; then
+    docker_running=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+    [ -n "$cache_dir" ] && printf '%s' "$docker_running" > "$docker_cache" 2>/dev/null
+fi
+: "${docker_running:=0}"
+
+# --- render ---
+short_model=$(printf '%s' "$model" | sed 's/^Claude //')
+dir=$(basename "$cwd" 2>/dev/null)
+
 ctx=""
-if [ -n "$used" ]; then
+if [ "$ctx_size" -gt 0 ]; then
     pct=$used
-    # 5-segment bar
     filled=$((pct / 20))
+    [ "$filled" -gt 5 ] && filled=5
+    [ "$filled" -lt 0 ] && filled=0
     empty=$((5 - filled))
     bar=""
     i=0; while [ $i -lt $filled ]; do bar="${bar}▰"; i=$((i+1)); done
-    i=0; while [ $i -lt $empty ];  do bar="${bar}▱"; i=$((i+1)); done
-    # color: green <50, yellow <80, red >=80
-    if [ "$pct" -ge 80 ]; then
-        color="\033[31m"
-    elif [ "$pct" -ge 50 ]; then
-        color="\033[33m"
-    else
-        color="\033[32m"
+    i=0; while [ $i -lt $empty  ]; do bar="${bar}▱"; i=$((i+1)); done
+    if   [ "$pct" -ge 80 ]; then color=$C_RED
+    elif [ "$pct" -ge 50 ]; then color=$C_YELLOW
+    else                         color=$C_GREEN
     fi
-    # Token counts in K format (derived from pct to stay consistent with displayed percentage)
-    token_info=""
-    if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
-        total_k=$(( (ctx_size + 500) / 1000 ))
-        used_k=$(( (ctx_size * pct / 100 + 500) / 1000 ))
-        token_info=" ${used_k}K/${total_k}K"
-    fi
-    ctx=" \033[90m│\033[0m 🧠 ${color}${bar} ${pct}%${token_info}\033[0m"
+    total_k=$(( (ctx_size + 500) / 1000 ))
+    used_k=$(( (ctx_size * pct / 100 + 500) / 1000 ))
+    ctx="${SEP}🧠 ${color}${bar} ${pct}% ${used_k}K/${total_k}K${C_RESET}"
 fi
 
-# Git branch + dirty
 branch_info=""
 if [ -n "$branch" ]; then
-    dirty_count=$(git -C "$cwd" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    dirty=""
-    if [ "$dirty_count" -gt 0 ]; then
-        dirty=" \033[33m*${dirty_count}\033[0m"
-    fi
-    branch_info=" \033[90m│\033[0m \033[35m🌿 ${branch}\033[0m${dirty}"
+    extras=""
+    [ "$dirty_count" -gt 0 ] && extras="${extras} ${C_YELLOW}*${dirty_count}${C_RESET}"
+    [ "$ahead"       -gt 0 ] && extras="${extras} ${C_GREEN}↑${ahead}${C_RESET}"
+    [ "$behind"      -gt 0 ] && extras="${extras} ${C_RED}↓${behind}${C_RESET}"
+    branch_info="${SEP}${C_MAGENTA}🌿 ${branch}${C_RESET}${extras}"
 fi
 
-# Docker containers
 docker_info=""
-if command -v docker >/dev/null 2>&1; then
-    running=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$running" -gt 0 ]; then
-        docker_info=" \033[90m│\033[0m 🐳 \033[36mcontainers:${running}\033[0m"
-    fi
+if [ "$docker_running" -gt 0 ]; then
+    docker_info="${SEP}🐳 ${C_CYAN}containers:${docker_running}${C_RESET}"
 fi
 
-# Output: model, context, dir, git, docker
-printf "\033[36m🤖 %b\033[0m%b \033[90m│\033[0m \033[34m📁 %b\033[0m%b%b" \
-    "$short_model" "$ctx" "$dir" "$branch_info" "$docker_info"
+printf '%s🤖 %s%s%s%s%s📁 %s%s%s%s' \
+    "$C_CYAN" "$short_model" "$C_RESET" \
+    "$ctx" "$SEP" \
+    "$C_BLUE" "$dir" "$C_RESET" \
+    "$branch_info" "$docker_info"
