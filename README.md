@@ -25,6 +25,18 @@ Context bar colors:
 - **Yellow** 50-79%
 - **Red** >= 80%
 
+The percentage is anchored to Claude Code's auto-compact threshold rather
+than the raw context window size — `/compact` typically triggers around
+80% of the window, so the top ~20% is unreachable in practice. The bar
+reaches **100%** right when compaction is about to fire. The `K/K`
+counter still reports the **raw** token usage against the **raw** window
+size (e.g. `87K/1000K` on a 1M window), so you can see absolute usage at
+a glance while the bar tells you how close compaction is.
+
+Override the threshold with `CSL_COMPACT_THRESHOLD` (default `80`,
+percent of `context_window_size`). Set it to `100` to disable the
+rescaling and display raw window fill.
+
 ## Quick Install
 
 ```bash

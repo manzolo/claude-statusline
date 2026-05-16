@@ -41,6 +41,30 @@ Fields the script reads from stdin (all optional, defaults in the jq block):
 safe. `cwd` may be empty for non-project sessions; git/docker sections must
 degrade silently.
 
+## Context-percentage display
+
+The bar shows percentage *toward auto-compaction*, not raw window fill.
+Claude Code auto-compacts at roughly 80% of `context_window_size`, so the
+top ~20% of the raw window is unreachable in practice. We rescale:
+
+- `raw_pct = max(api_used_percentage, sum(current_usage tokens) / ctx_size)`
+- `displayed_pct = clamp(raw_pct * 100 / CSL_COMPACT_THRESHOLD, 0..100)`
+- Token K/K shows the **raw** counts and the **raw** window size (e.g.
+  `87K/1000K` on a 1M window). The percentage and the K/K intentionally
+  describe two different things: the bar is "% toward compaction"; the
+  K/K is "absolute usage / absolute window". 100% on the bar therefore
+  does *not* mean used_K == total_K — it means /compact is imminent.
+
+`CSL_COMPACT_THRESHOLD` (env var, default `80`) is the only knob. Setting
+it to `100` disables the rescaling and shows raw window fill. Don't change
+the default without an empirical observation — the user fine-tuned 80
+against actual compaction triggers between 80–83%.
+
+No JSON field exposes the real compaction threshold; the docs only confirm
+`exceeds_200k_tokens` (a fixed 200K flag, not the compaction trigger).
+If Anthropic ever adds an `auto_compact_threshold` field, prefer it over
+the env var.
+
 ## Cache layout
 
 - Directory: `/tmp/claude-statusline-<uid>/`

@@ -49,16 +49,32 @@ EOF
 : "${ctx_size:=0}" "${api_pct:=0}"
 : "${input_t:=0}" "${cache_c:=0}" "${cache_r:=0}" "${output_t:=0}"
 
-# --- context % (max of API value and token-based estimate) ---
+# --- context % normalized to auto-compact threshold ---
+# Claude Code auto-compacts at ~80% of context_window_size; the raw window is
+# never fully usable. We display the percentage *toward compaction*, so the
+# bar reaches 100% right when /compact would fire. Override the threshold
+# (in % of context_window_size) via CSL_COMPACT_THRESHOLD.
+COMPACT_THRESHOLD=${CSL_COMPACT_THRESHOLD:-80}
+
+# Raw % of full window (max of API value and token-based estimate, since
+# the API's used_percentage excludes output_tokens).
 total=$((input_t + cache_c + cache_r + output_t))
-calc_pct=0
+raw_calc=0
 if [ "$ctx_size" -gt 0 ] && [ "$total" -gt 0 ]; then
-    calc_pct=$((total * 100 / ctx_size))
+    raw_calc=$((total * 100 / ctx_size))
 fi
-if [ "$api_pct" -gt "$calc_pct" ]; then
-    used=$api_pct
+if [ "$api_pct" -gt "$raw_calc" ]; then
+    raw_pct=$api_pct
 else
-    used=$calc_pct
+    raw_pct=$raw_calc
+fi
+
+# Normalize against compaction threshold, clamp at 100.
+if [ "$COMPACT_THRESHOLD" -gt 0 ]; then
+    used=$((raw_pct * 100 / COMPACT_THRESHOLD))
+    [ "$used" -gt 100 ] && used=100
+else
+    used=$raw_pct
 fi
 
 # --- cache helpers (TTL = 3s) ---
@@ -130,8 +146,10 @@ if [ "$ctx_size" -gt 0 ]; then
     elif [ "$pct" -ge 50 ]; then color=$C_YELLOW
     else                         color=$C_GREEN
     fi
+    # Token display uses real counts and the raw window size; the bar % is
+    # normalized to compaction so 100% ≠ ctx_size by design.
     total_k=$(( (ctx_size + 500) / 1000 ))
-    used_k=$(( (ctx_size * pct / 100 + 500) / 1000 ))
+    used_k=$(( (total + 500) / 1000 ))
     ctx="${SEP}🧠 ${color}${bar} ${pct}% ${used_k}K/${total_k}K${C_RESET}"
 fi
 
